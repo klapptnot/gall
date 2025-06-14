@@ -16,7 +16,7 @@ mod blocks;
 mod misc;
 
 const GTK_APP_ID: &str = "net.domain.AppLauncher";
-const PID_FILE_PATH: &str = "/tmp/gtk4-daemon.pid";
+const PID_FILE_PATH: &str = "gall-daemon.lock";
 const LOCAL_PATH: &str = ".config/gall";
 const DESKTOP_PATHS: [&str; 3] = [
     "/usr/share/applications/",
@@ -137,8 +137,10 @@ fn setup_controllers(app: &AppWindow) {
             // Ctrl+Esc: Clear input or switch to description search
             gdk::Key::Escape if state.contains(gdk::ModifierType::CONTROL_MASK) => {
                 if search_input.text().is_empty() {
-                    let state = app_state.clone();
-                    toggle_search_mode(state, &toggle_btn);
+                    {
+                        let state = app_state.clone();
+                        toggle_search_mode(state, &toggle_btn);
+                    }
                 }
                 search_input.set_text("");
                 glib::Propagation::Stop
@@ -146,9 +148,12 @@ fn setup_controllers(app: &AppWindow) {
 
             // Escape + Ctrl+Return (search_input takes Return)
             gdk::Key::Return | gdk::Key::Escape => {
-                let mut locked = app_state.lock().unwrap();
-                locked.selected = 0;
+                {
+                    let mut locked = app_state.lock().unwrap();
+                    locked.selected = 0;
+                }
                 search_input.set_text("");
+                listbox.select_row(listbox.row_at_index(0).as_ref());
                 window.hide();
                 glib::Propagation::Stop
             }
@@ -278,6 +283,7 @@ fn setup_controllers(app: &AppWindow) {
     let window = app.window.clone();
     let search_input = app.search_input.clone();
     let state = app.state.clone();
+    let listbox = app.listbox.clone();
 
     glib::source::unix_signal_add_local(libc::SIGUSR1, move || {
         search_input.set_text("");
@@ -285,6 +291,7 @@ fn setup_controllers(app: &AppWindow) {
         if window.is_visible() {
             window.hide();
             locked.selected = 0;
+            listbox.select_row(listbox.row_at_index(0).as_ref())
         } else {
             window.show();
             if locked.css_reload {
@@ -296,9 +303,12 @@ fn setup_controllers(app: &AppWindow) {
 
     // Hmm
     let search_input = app.search_input.clone();
+    let listbox = app.listbox.clone();
+
     app.window.connect_close_request(move |window| {
         window.hide();
         search_input.set_text("");
+        listbox.select_row(listbox.row_at_index(0).as_ref());
         glib::Propagation::Stop
     });
 
@@ -368,6 +378,11 @@ fn main() {
 
     match cli.command {
         Commands::Start(args) => {
+            if misc::daemon_is_running() {
+                eprintln!("Process is already running!");
+                std::process::exit(0)
+            }
+
             let config = args.config.map_or(misc::get_local_path("config.toml"), |p| p);
             let styles = args.styles.map_or(misc::get_local_path("styles.css"), |p| p);
 
@@ -381,13 +396,28 @@ fn main() {
             gtk_main(config, styles, args.open);
         }
         Commands::Stop(args) => {
+            if misc::daemon_is_running() {
+                eprintln!("Process is already dead!");
+                std::process::exit(0)
+            }
+
             if args.force {
                 println!("🛑 Force shutdown requested...");
                 misc::send_signal(libc::SIGKILL);
             } else {
                 println!("🛑 Stopping daemon...");
                 misc::send_signal(libc::SIGINT);
+
+                let pid = misc::read_pid_file().expect("PID file missing or bad formatted!");
+
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if misc::process_is_running(pid) {
+                    eprintln!("Process hasn't stopped after 500ms, try `--force`");
+                    std::process::exit(1);
+                }
             }
+
+            std::fs::remove_file(misc::pid_file_path()).expect("Unable to remove PID file!");
         }
         Commands::Apps => {
             println!("🔄 Toggling launcher visibility...");
