@@ -46,7 +46,6 @@ struct AppState {
     styles: PathBuf,
     name_fuzz: bool,
     selected: u32,
-    #[allow(dead_code)]
     css_reload: bool,
     all_apps: Vec<AppEntry>,
     fil_apps: u32,
@@ -288,12 +287,14 @@ fn setup_controllers(app: &AppWindow) {
     glib::source::unix_signal_add_local(libc::SIGUSR1, move || {
         search_input.set_text("");
         let mut locked = state.lock().unwrap();
+        locked.selected = 0;
+        listbox.select_row(listbox.row_at_index(0).as_ref());
+
         if window.is_visible() {
             window.hide();
-            locked.selected = 0;
-            listbox.select_row(listbox.row_at_index(0).as_ref())
         } else {
             window.show();
+            search_input.grab_focus();
             if locked.css_reload {
                 misc::apply_styles(&locked.styles);
             }

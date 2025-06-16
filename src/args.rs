@@ -4,6 +4,12 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "gall")]
 #[command(about = "GTK based (apps) selector")]
+#[command(version = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GIT_HASH"),
+    ")"
+))]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
