@@ -37,9 +37,9 @@ pub struct DaemonArgs {
     #[arg(short, long, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Open window as soon it loads
+    /// Keep open here, without daemon behavior
     #[arg(long)]
-    pub open: bool,
+    pub here: bool,
 }
 
 #[derive(Args)]

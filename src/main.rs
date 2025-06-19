@@ -1,5 +1,4 @@
-// All files `use crate::gtk`
-pub(crate) use gtk4 as gtk;
+use gtk4 as gtk;
 
 use clap::Parser;
 use serde::Deserialize;
@@ -8,13 +7,17 @@ use std::sync::{Arc, Mutex};
 
 use gtk::gio::ApplicationFlags;
 use gtk::prelude::*;
-use gtk::{gdk, glib, Application, ApplicationWindow};
+use gtk::{glib, Application, ApplicationWindow};
 
-use crate::args::Commands;
+mod action;
 mod args;
 mod blocks;
 mod misc;
 
+const SIGNAL_APPS: i32 = libc::SIGUSR1;
+#[allow(dead_code)]
+const SIGNAL_CLIPBOARD: i32 = libc::SIGUSR2;
+const SIGNAL_RELOAD: i32 = libc::SIGWINCH;
 const GTK_APP_ID: &str = "net.domain.AppLauncher";
 const PID_FILE_PATH: &str = "gall-daemon.lock";
 const LOCAL_PATH: &str = ".config/gall";
@@ -41,9 +44,19 @@ struct AppEntry {
     exec: String,
 }
 
+#[derive(PartialEq)]
+enum PickerKind {
+    Apps,
+    #[allow(dead_code)]
+    Clipboard,
+    None,
+}
+
 struct AppState {
     config: PathBuf,
     styles: PathBuf,
+    visible: bool,
+    pick_kind: PickerKind,
     name_fuzz: bool,
     selected: u32,
     css_reload: bool,
@@ -52,11 +65,13 @@ struct AppState {
     spawn_err: Option<misc::CommandError>,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
+impl AppState {
+    fn new(config: PathBuf, styles: PathBuf) -> Self {
         Self {
-            config: PathBuf::new(),
-            styles: PathBuf::new(),
+            config,
+            styles,
+            visible: false,
+            pick_kind: PickerKind::None,
             name_fuzz: true,
             selected: 0,
             css_reload: false,
@@ -67,278 +82,132 @@ impl Default for AppState {
     }
 }
 
-impl AppState {
-    fn new(config: PathBuf, styles: PathBuf) -> Self {
-        Self {
-            config,
-            styles,
-            ..Default::default()
-        }
-    }
-}
-
-struct AppWindow {
-    state: Arc<Mutex<AppState>>,
-    window: ApplicationWindow,
+struct Picker {
+    mainbox: gtk::Box,
     search_input: gtk::Entry,
     toggle_btn: gtk::Button,
     listbox: gtk::ListBox,
 }
 
-impl AppWindow {
+struct GallApp {
+    state: Arc<Mutex<AppState>>,
+    window: ApplicationWindow,
+    pickers: [Arc<Picker>; 1],
+}
+
+impl GallApp {
     pub fn new(app: &Application, state: Arc<Mutex<AppState>>) -> Self {
-        let (window, listbox, search_input, toggle_btn) = blocks::main_launch_window(app);
+        let (w, h) = misc::get_full_display_size();
+        let (w, h) = (w as f32 * 0.3, h as f32 * 0.4);
+
+        let window = ApplicationWindow::builder()
+            .application(app)
+            .title("Gall")
+            .default_width(w as i32)
+            .default_height(h as i32)
+            .decorated(false)
+            .build();
+
+        let picker = Arc::new(blocks::generic_picker_box());
 
         Self {
             state,
             window,
-            listbox,
-            search_input,
-            toggle_btn,
+            pickers: [picker.clone()],
         }
     }
 
-    pub fn load(&self) -> &Self {
+    pub fn load(&self, app: &Arc<GallApp>) -> &Self {
         let state = self.state.clone();
+        let mut locked = state.lock().unwrap();
+        misc::apply_styles(&locked.styles);
+        let config = misc::load_config(&locked.config);
+
+        locked.all_apps = config.apps;
+        locked.css_reload = config.css_reload;
+
         {
-            let mut locked = state.lock().unwrap();
-            misc::apply_styles(&locked.styles);
-            let config = misc::load_config(&locked.config);
+            let selfr = app.clone();
+            let picker = selfr.pickers[0].clone();
+            let window = selfr.window.clone();
+            let search_input = picker.search_input.clone();
+            let state = selfr.state.clone();
+            let listbox = picker.listbox.clone();
 
-            locked.all_apps = config.apps;
-            locked.css_reload = config.css_reload;
-        } // drop mutex lock
+            glib::source::unix_signal_add_local(SIGNAL_APPS, move || {
+                search_input.set_text("");
+                println!("Apps");
+                let mut locked = state.lock().unwrap();
+                locked.selected = 0;
+                listbox.select_row(listbox.row_at_index(0).as_ref());
 
-        let listbox = self.listbox.clone();
-        blocks::populate_list(&listbox, &state, "");
-        setup_controllers(&self);
+                locked.visible = !locked.visible;
+
+                if locked.pick_kind == PickerKind::Apps {
+                    if !locked.visible {
+                        window.hide();
+                    } else {
+                        window.show();
+                    }
+
+                    return glib::ControlFlow::Continue;
+                }
+
+                // !!visible
+                if locked.visible {
+                    window.show();
+                }
+
+                locked.pick_kind = PickerKind::Apps;
+                search_input.grab_focus();
+                if locked.css_reload {
+                    misc::apply_styles(&locked.styles);
+                }
+
+                drop(locked); // load_app_picker locks mutex
+
+                selfr.load_app_picker();
+
+                glib::ControlFlow::Continue
+            });
+        }
+
+        {
+            // let selfr = app.clone();
+            let picker = self.pickers[0].clone();
+            let window = self.window.clone();
+            let search_input = picker.search_input.clone();
+            let listbox = picker.listbox.clone();
+            let state = self.state.clone();
+
+            window.connect_close_request(move |window| {
+                let mut locked = state.lock().unwrap();
+                locked.visible = false;
+                window.hide();
+
+                search_input.set_text("");
+                listbox.select_row(listbox.row_at_index(0).as_ref());
+                glib::Propagation::Stop
+            });
+        }
+
+        action::set_picker_control(&self, &self.pickers[0]);
+        action::app_picker_control(&self, &self.pickers[0]);
 
         self
     }
 
-    pub fn present(&self) {
-        self.window.present();
-    }
-}
+    pub fn load_app_picker(&self) -> &Self {
+        let state = self.state.clone();
+        let picker = &self.pickers[0];
 
-fn setup_controllers(app: &AppWindow) {
-    let key_controller = gtk::EventControllerKey::new();
+        self.window.set_child(Some(&picker.mainbox));
+        blocks::apps_populate_list(&picker.listbox, &state, "");
 
-    // Clone references for the closure
-    let search_input = app.search_input.clone();
-    let listbox = app.listbox.clone();
-    let window = app.window.clone();
-    let toggle_btn = app.toggle_btn.clone();
-    let app_state = app.state.clone();
+        let _ = &picker.toggle_btn.set_icon_name("edit-find-symbolic");
+        let _ = &picker.toggle_btn.set_tooltip_text(Some("Search by name"));
 
-    key_controller.connect_key_pressed(move |_controller, keyval, _keycode, state| {
-        match keyval {
-            // Ctrl+Esc: Clear input or switch to description search
-            gdk::Key::Escape if state.contains(gdk::ModifierType::CONTROL_MASK) => {
-                if search_input.text().is_empty() {
-                    {
-                        let state = app_state.clone();
-                        toggle_search_mode(state, &toggle_btn);
-                    }
-                }
-                search_input.set_text("");
-                glib::Propagation::Stop
-            }
-
-            // Escape + Ctrl+Return (search_input takes Return)
-            gdk::Key::Return | gdk::Key::Escape => {
-                {
-                    let mut locked = app_state.lock().unwrap();
-                    locked.selected = 0;
-                }
-                search_input.set_text("");
-                listbox.select_row(listbox.row_at_index(0).as_ref());
-                window.hide();
-                glib::Propagation::Stop
-            }
-
-            // Up arrow: Move up in list
-            gdk::Key::Up => {
-                let mut locked = app_state.lock().unwrap();
-                if locked.fil_apps > 0 {
-                    listbox.grab_focus();
-
-                    if locked.selected > 0 {
-                        locked.selected -= 1;
-                    } else {
-                        locked.selected = locked.fil_apps - 1;
-                    }
-
-                    if let Some(row) = listbox.row_at_index(locked.selected as i32) {
-                        listbox.select_row(Some(&row));
-                        row.grab_focus();
-                        search_input.grab_focus();
-                    }
-                }
-                glib::Propagation::Stop
-            }
-
-            // Down arrow: Move down in list
-            gdk::Key::Down => {
-                let mut locked = app_state.lock().unwrap();
-                if locked.fil_apps > 0 {
-                    listbox.grab_focus();
-
-                    let max_index = locked.fil_apps - 1;
-                    if locked.selected < max_index {
-                        locked.selected += 1;
-                    } else {
-                        locked.selected = 0;
-                    }
-
-                    if let Some(row) = listbox.row_at_index(locked.selected as i32) {
-                        listbox.select_row(Some(&row));
-                        row.grab_focus();
-                        search_input.grab_focus();
-                    }
-                }
-                glib::Propagation::Stop
-            }
-
-            _ => glib::Propagation::Proceed,
-        }
-    });
-
-    app.window.add_controller(key_controller);
-
-    let listbox = app.listbox.clone();
-    let state = app.state.clone();
-
-    app.search_input.connect_changed(move |entry| {
-        let text = entry.text();
-        blocks::populate_list(&listbox, &state, text.as_str());
-    });
-
-    let state = app.state.clone();
-    let listbox = app.listbox.clone();
-    let window = app.window.clone();
-
-    app.search_input.connect_activate(move |_| {
-        let row: gtk::ListBoxRow;
-        {
-            let locked = state.lock().unwrap();
-            row = listbox
-                .row_at_index(locked.selected as i32)
-                .expect("Invalid row");
-        }
-
-        unsafe {
-            if let Some(exec) = row.data::<String>("exec") {
-                let exec = exec.as_ref().clone();
-                let state_clone = state.clone();
-
-                std::thread::spawn(move || {
-                    match misc::launch_detached(&exec) {
-                        Ok(()) => {
-                            // Clear any previous errors on success
-                            if let Ok(mut locked) = state_clone.lock() {
-                                locked.spawn_err = None;
-                            }
-                        }
-                        Err(e) => {
-                            // Set the error in state
-                            if let Ok(mut locked) = state_clone.lock() {
-                                locked.spawn_err = Some(e);
-                            }
-                        }
-                    }
-                });
-            }
-        };
-
-        window.hide();
-
-        // check for spawn errors every 250ms
-        let state_timer = state.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
-            if let Ok(mut locked) = state_timer.lock() {
-                if let Some(error) = locked.spawn_err.take() {
-                    blocks::create_error_window(error);
-                    return glib::ControlFlow::Break;
-                }
-            }
-            glib::ControlFlow::Continue
-        });
-    });
-
-    let state = app.state.clone();
-    app.toggle_btn.connect("clicked", true, move |val| {
-        let btn = val
-            .get(0)
-            .and_then(|v| v.get::<gtk::Button>().ok())
-            .expect("First argument is not a gtk::Button");
-
-        let state = state.clone();
-        toggle_search_mode(state, &btn);
-
-        None
-    });
-
-    let window = app.window.clone();
-    let search_input = app.search_input.clone();
-    let state = app.state.clone();
-    let listbox = app.listbox.clone();
-
-    glib::source::unix_signal_add_local(libc::SIGUSR1, move || {
-        search_input.set_text("");
-        let mut locked = state.lock().unwrap();
-        locked.selected = 0;
-        listbox.select_row(listbox.row_at_index(0).as_ref());
-
-        if window.is_visible() {
-            window.hide();
-        } else {
-            window.show();
-            search_input.grab_focus();
-            if locked.css_reload {
-                misc::apply_styles(&locked.styles);
-            }
-        }
-        glib::ControlFlow::Continue
-    });
-
-    // Hmm
-    let search_input = app.search_input.clone();
-    let listbox = app.listbox.clone();
-
-    app.window.connect_close_request(move |window| {
-        window.hide();
-        search_input.set_text("");
-        listbox.select_row(listbox.row_at_index(0).as_ref());
-        glib::Propagation::Stop
-    });
-
-    let state = app.state.clone();
-    let listbox = app.listbox.clone();
-    glib::source::unix_signal_add_local(libc::SIGUSR2, move || {
-        {
-            let mut locked = state.lock().unwrap();
-            misc::apply_styles(&locked.styles);
-            let config = misc::load_config(&locked.config);
-
-            locked.all_apps = config.apps;
-            locked.css_reload = config.css_reload;
-        }
-        blocks::populate_list(&listbox, &state, "");
-        glib::ControlFlow::Continue
-    });
-}
-
-fn toggle_search_mode(state: Arc<Mutex<AppState>>, toggle_btn: &gtk::Button) {
-    let mut locked = state.lock().unwrap();
-    locked.name_fuzz = !locked.name_fuzz;
-
-    if locked.name_fuzz {
-        toggle_btn.set_icon_name("edit-find-symbolic");
-        toggle_btn.set_tooltip_text(Some("Search by name"));
-    } else {
-        toggle_btn.set_icon_name("dialog-information-symbolic");
-        toggle_btn.set_tooltip_text(Some("Search by generic + description"));
+        self
     }
 }
 
@@ -359,12 +228,10 @@ fn gtk_main(config: PathBuf, styles: PathBuf, open_on_load: bool) -> glib::ExitC
             config.to_path_buf(),
             styles.to_path_buf(),
         )));
-        let app_win = AppWindow::new(app, state);
-        app_win.load();
+        let app_win = Arc::new(GallApp::new(app, state));
+        app_win.load(&app_win);
 
-        if open_on_load {
-            app_win.present();
-        }
+        println!("  Activated!");
     });
 
     if !open_on_load {
@@ -378,7 +245,7 @@ fn main() {
     let cli = args::Cli::parse();
 
     match cli.command {
-        Commands::Start(args) => {
+        args::Commands::Start(args) => {
             if misc::daemon_is_running() {
                 eprintln!("Process is already running!");
                 std::process::exit(0)
@@ -391,13 +258,13 @@ fn main() {
             println!("  Config path: {}", config.display());
             println!(
                 "  Daemonize: {}",
-                if !args.open { "enabled" } else { "disabled" }
+                if !args.here { "enabled" } else { "disabled" }
             );
 
-            gtk_main(config, styles, args.open);
+            gtk_main(config, styles, args.here);
         }
-        Commands::Stop(args) => {
-            if misc::daemon_is_running() {
+        args::Commands::Stop(args) => {
+            if !misc::daemon_is_running() {
                 eprintln!("Process is already dead!");
                 std::process::exit(0)
             }
@@ -420,13 +287,13 @@ fn main() {
 
             std::fs::remove_file(misc::pid_file_path()).expect("Unable to remove PID file!");
         }
-        Commands::Apps => {
+        args::Commands::Apps => {
             println!("🔄 Toggling launcher visibility...");
-            misc::send_signal(libc::SIGUSR1);
+            misc::send_signal(SIGNAL_APPS);
         }
-        Commands::Reload => {
+        args::Commands::Reload => {
             println!("♻️  Reloading daemon configuration...");
-            misc::send_signal(libc::SIGUSR2);
+            misc::send_signal(SIGNAL_RELOAD);
         }
     }
 }

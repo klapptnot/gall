@@ -3,32 +3,19 @@ use std::sync::Mutex;
 
 use crate::gtk;
 use crate::misc;
-use crate::AppState;
+use crate::{AppState, Picker};
 
 use gtk::prelude::*;
-use gtk::{
-    gdk, glib, ApplicationWindow, Box as GtkBox, Button, Entry, ListBox, Orientation, PolicyType, ScrolledWindow, SelectionMode,
-};
+use gtk::{gdk, glib};
 
-pub(crate) fn main_launch_window(app: &gtk::Application) -> (ApplicationWindow, ListBox, Entry, Button) {
-    let (w, h) = misc::get_full_display_size();
-    let (w, h) = (w as f32 * 0.3, h as f32 * 0.4);
-
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("Gall - launch")
-        .default_width(w as i32)
-        .default_height(h as i32)
-        .decorated(false)
-        .build();
-
-    let box_main = GtkBox::builder()
+pub(crate) fn generic_picker_box() -> Picker {
+    let mainbox = gtk::Box::builder()
         .name("main-box")
-        .orientation(Orientation::Vertical)
+        .orientation(gtk::Orientation::Vertical)
         .spacing(0)
         .build();
 
-    let box_input = GtkBox::builder()
+    let box_input = gtk::Box::builder()
         .name("search-box")
         .spacing(5)
         .margin_start(10)
@@ -37,22 +24,18 @@ pub(crate) fn main_launch_window(app: &gtk::Application) -> (ApplicationWindow, 
         .margin_bottom(5)
         .build();
 
-    let search_input = Entry::builder()
+    let search_input = gtk::Entry::builder()
         .name("search-input")
         .placeholder_text("Type to search apps...")
         .build();
     search_input.set_hexpand(true);
 
-    let toggle_btn = Button::builder()
-        .name("toggle-button")
-        .icon_name("edit-find-symbolic")
-        .tooltip_text("Search by name")
-        .build();
+    let toggle_btn = gtk::Button::builder().name("toggle-button").build();
 
-    let scroll_apps = ScrolledWindow::builder()
+    let scroll_apps = gtk::ScrolledWindow::builder()
         .name("apps-scroll")
-        .hscrollbar_policy(PolicyType::Never)
-        .vscrollbar_policy(PolicyType::Automatic)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
         .margin_start(10)
         .margin_end(10)
         .margin_top(10)
@@ -60,9 +43,9 @@ pub(crate) fn main_launch_window(app: &gtk::Application) -> (ApplicationWindow, 
         .build();
     scroll_apps.set_vexpand(true);
 
-    let listbox = ListBox::builder()
+    let listbox = gtk::ListBox::builder()
         .name("apps-list")
-        .selection_mode(SelectionMode::Single)
+        .selection_mode(gtk::SelectionMode::Single)
         .vexpand_set(true)
         .build();
 
@@ -71,15 +54,18 @@ pub(crate) fn main_launch_window(app: &gtk::Application) -> (ApplicationWindow, 
 
     scroll_apps.set_child(Some(&listbox));
 
-    box_main.append(&box_input);
-    box_main.append(&scroll_apps);
+    mainbox.append(&box_input);
+    mainbox.append(&scroll_apps);
 
-    window.set_child(Some(&box_main));
-
-    (window, listbox, search_input, toggle_btn)
+    Picker {
+        mainbox,
+        search_input,
+        toggle_btn,
+        listbox,
+    }
 }
 
-pub(crate) fn populate_list(listbox: &gtk::ListBox, state: &Arc<Mutex<AppState>>, pattern: &str) {
+pub(crate) fn apps_populate_list(listbox: &gtk::ListBox, state: &Arc<Mutex<AppState>>, pattern: &str) {
     while let Some(child) = listbox.first_child() {
         listbox.remove(&child);
     }

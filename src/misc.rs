@@ -12,7 +12,6 @@ use gtk::prelude::{Cast, DisplayExt, ListModelExt, MonitorExt};
 
 use crate::{AppEntry, ConfigLoad};
 
-#[derive(Debug)]
 pub(crate) struct CommandError {
     pub(crate) reason: String,
     pub(crate) stderr: Option<String>,
