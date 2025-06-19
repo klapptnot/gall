@@ -9,9 +9,8 @@ Gall is a application launcher that provides a clean GTK interface for quickly f
 ## Installation
 
 ```bash
-# Build from source
-cargo build --release
-sudo cp target/release/gall /usr/local/bin/
+# Build from source to ~/.cargo/bin/gall
+cargo install --path .
 ```
 
 ## Usage
@@ -56,7 +55,7 @@ css_reload = false
 name = "Hatsune Miku"
 generic = "CV01 - 初音ミク"
 description = "It's Hatsune Miku, what do you expect?"
-exec = "bash -c 'sleep 1; echo \"HIIII ERR\" >&2; echo \"MIKUUUU\"; exit 1'"
+exec = "bash -c 'sleep 1; echo \"信じてないんだよ、ね？\" >&2; echo \"むかえにゆくよ\"; exit 1'"
 icon = "~/Downloads/Hatsune_Miku.png"
 
 [[apps]]
