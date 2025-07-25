@@ -117,6 +117,7 @@ pub(crate) fn app_picker_control(app: &GallApp, picker: &Arc<Picker>) {
         let state = state.clone();
         let listbox = picker.listbox.clone();
         let window = mwindow.clone();
+        let gapp = app.app.clone();
 
         picker.search_input.connect_activate(move |_| {
             let row: gtk::ListBoxRow;
@@ -128,39 +129,27 @@ pub(crate) fn app_picker_control(app: &GallApp, picker: &Arc<Picker>) {
                 locked.visible = false;
             }
 
-            unsafe {
-                if let Some(exec) = row.data::<String>("exec") {
-                    let exec = exec.as_ref().clone();
-                    let state_clone = state.clone();
-
-                    std::thread::spawn(move || match misc::launch_detached(&exec) {
-                        Ok(()) => {
-                            if let Ok(mut locked) = state_clone.lock() {
-                                locked.spawn_err = None;
-                            }
-                        }
-                        Err(e) => {
-                            if let Ok(mut locked) = state_clone.lock() {
-                                locked.spawn_err = Some(e);
-                            }
-                        }
-                    });
-                }
-            };
-
             window.hide();
 
-            // check for spawn errors every 250ms
-            let state_timer = state.clone();
-            glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
-                if let Ok(mut locked) = state_timer.lock() {
-                    if let Some(error) = locked.spawn_err.take() {
-                        blocks::create_error_window(error);
-                        return glib::ControlFlow::Break;
-                    }
-                }
-                glib::ControlFlow::Continue
-            });
+            let exec = unsafe { row.data::<String>("exec").map(|v| v.as_ref().clone()) };
+            if let Some(exec) = exec {
+                launch_command_helper(exec, &gapp);
+            }
+        });
+    }
+
+    {
+        let listbox = picker.listbox.clone();
+        let window = mwindow.clone();
+        let gapp = app.app.clone();
+
+        listbox.connect_row_activated(move |_, row| {
+            window.hide();
+
+            let exec = unsafe { row.data::<String>("exec").map(|v| v.as_ref().clone()) };
+            if let Some(exec) = exec {
+                launch_command_helper(exec, &gapp);
+            }
         });
     }
 
@@ -208,4 +197,41 @@ fn apps_toggle_search_mode(state: Arc<Mutex<AppState>>, toggle_btn: &gtk::Button
         toggle_btn.set_icon_name("dialog-information-symbolic");
         toggle_btn.set_tooltip_text(Some("Search by generic + description"));
     }
+}
+
+fn launch_command_helper(exec: String, app: &gtk::Application) -> () {
+    let cmde = std::thread::spawn(move || misc::launch_detached(&exec));
+    let app = app.clone();
+
+    // just to ensure it's used once
+    let mut cmde = Some(cmde);
+
+    glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+        if let Some(ref handle) = cmde {
+            if !handle.is_finished() {
+                return glib::ControlFlow::Continue;
+            }
+        } else {
+            return glib::ControlFlow::Break;
+        }
+
+        let handle = cmde.take();
+
+        if let Some(handle) = handle {
+            let jhres = handle.join();
+
+            if jhres.is_err() {
+                return glib::ControlFlow::Break;
+            }
+
+            let jhres = jhres.unwrap();
+
+            if let Err(error) = jhres {
+                blocks::create_error_window(&app, error);
+                return glib::ControlFlow::Break;
+            }
+        }
+
+        glib::ControlFlow::Continue
+    });
 }

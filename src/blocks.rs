@@ -36,6 +36,7 @@ pub(crate) fn generic_picker_box() -> Picker {
         .name("apps-scroll")
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .overflow(gtk::Overflow::Hidden)
         .margin_start(10)
         .margin_end(10)
         .margin_top(10)
@@ -179,19 +180,26 @@ fn create_icon_widget(icon_str: &str, size: i32) -> Option<gtk::Image> {
         gtk::IconLookupFlags::PRELOAD,
     );
 
-    let image = gtk::Image::from_paintable(Some(&icon_paintable));
-    image.set_widget_name("app-row-image");
-    image.set_pixel_size(size);
+    let image = gtk::Image::builder()
+        .overflow(gtk::Overflow::Hidden)
+        .name("app-row-image")
+        .pixel_size(size)
+        .paintable(&icon_paintable)
+        .build();
+
     Some(image)
 }
 
-pub(crate) fn create_error_window(error: misc::CommandError) {
+pub(crate) fn create_error_window(app: &gtk::Application, error: misc::CommandError) {
     let error_window = gtk::Window::builder()
         .title("Gall - Command Error")
         .default_width(600)
         .default_height(400)
         .resizable(true)
         .build();
+
+    // Attach the window to the application
+    error_window.set_application(Some(app));
 
     let vbox = gtk::Box::builder()
         .name("error-box")
@@ -210,7 +218,7 @@ pub(crate) fn create_error_window(error: misc::CommandError) {
         .build();
 
     reason_label.set_markup(&format!(
-        "<span size=\"16000\"><b>Error: {}</b></span>",
+        "<span size=\"16000\"><b>{}</b></span>",
         error.reason
     ));
     vbox.append(&reason_label);

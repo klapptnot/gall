@@ -18,7 +18,7 @@ const SIGNAL_APPS: i32 = libc::SIGUSR1;
 #[allow(dead_code)]
 const SIGNAL_CLIPBOARD: i32 = libc::SIGUSR2;
 const SIGNAL_RELOAD: i32 = libc::SIGWINCH;
-const GTK_APP_ID: &str = "net.domain.AppLauncher";
+const GTK_APP_ID: &str = "xyz.gall.pickers";
 const PID_FILE_PATH: &str = "gall-daemon.lock";
 const LOCAL_PATH: &str = ".config/gall";
 const DESKTOP_PATHS: [&str; 3] = [
@@ -30,6 +30,7 @@ const DESKTOP_PATHS: [&str; 3] = [
 #[derive(Debug, Deserialize)]
 struct ConfigLoad {
     css_reload: bool,
+    terminal: Option<String>,
     apps: Vec<AppEntry>,
 }
 
@@ -62,7 +63,6 @@ struct AppState {
     css_reload: bool,
     all_apps: Vec<AppEntry>,
     fil_apps: u32,
-    spawn_err: Option<misc::CommandError>,
 }
 
 impl AppState {
@@ -77,7 +77,6 @@ impl AppState {
             css_reload: false,
             all_apps: Vec::new(),
             fil_apps: 0,
-            spawn_err: None,
         }
     }
 }
@@ -90,6 +89,7 @@ struct Picker {
 }
 
 struct GallApp {
+    app: Application,
     state: Arc<Mutex<AppState>>,
     window: ApplicationWindow,
     pickers: [Arc<Picker>; 1],
@@ -111,6 +111,7 @@ impl GallApp {
         let picker = Arc::new(blocks::generic_picker_box());
 
         Self {
+            app: app.clone(),
             state,
             window,
             pickers: [picker.clone()],
@@ -136,18 +137,22 @@ impl GallApp {
 
             glib::source::unix_signal_add_local(SIGNAL_APPS, move || {
                 search_input.set_text("");
-                println!("Apps");
                 let mut locked = state.lock().unwrap();
                 locked.selected = 0;
                 listbox.select_row(listbox.row_at_index(0).as_ref());
 
                 locked.visible = !locked.visible;
 
+                if locked.css_reload {
+                    misc::apply_styles(&locked.styles);
+                }
+
                 if locked.pick_kind == PickerKind::Apps {
                     if !locked.visible {
                         window.hide();
                     } else {
                         window.show();
+                        search_input.grab_focus();
                     }
 
                     return glib::ControlFlow::Continue;
@@ -160,9 +165,6 @@ impl GallApp {
 
                 locked.pick_kind = PickerKind::Apps;
                 search_input.grab_focus();
-                if locked.css_reload {
-                    misc::apply_styles(&locked.styles);
-                }
 
                 drop(locked); // load_app_picker locks mutex
 
@@ -203,6 +205,7 @@ impl GallApp {
 
         self.window.set_child(Some(&picker.mainbox));
         blocks::apps_populate_list(&picker.listbox, &state, "");
+        picker.search_input.grab_focus();
 
         let _ = &picker.toggle_btn.set_icon_name("edit-find-symbolic");
         let _ = &picker.toggle_btn.set_tooltip_text(Some("Search by name"));
@@ -220,7 +223,8 @@ fn gtk_main(config: PathBuf, styles: PathBuf, open_on_load: bool) -> glib::ExitC
     app.connect_command_line(|app, _command_line| {
         // <<<< DON'T. TRY. TO. PARSE. ARGS. GTK. PERIOD.
         app.activate();
-        0
+
+        glib::ExitCode::SUCCESS
     });
 
     app.connect_activate(move |app| {
@@ -231,7 +235,7 @@ fn gtk_main(config: PathBuf, styles: PathBuf, open_on_load: bool) -> glib::ExitC
         let app_win = Arc::new(GallApp::new(app, state));
         app_win.load(&app_win);
 
-        println!("  Activated!");
+        println!("  init () ➜ 🩵!");
     });
 
     if !open_on_load {
@@ -251,8 +255,8 @@ fn main() {
                 std::process::exit(0)
             }
 
-            let config = args.config.map_or(misc::get_local_path("config.toml"), |p| p);
-            let styles = args.styles.map_or(misc::get_local_path("styles.css"), |p| p);
+            let config = args.config.map_or(misc::get_local_path("pickers.toml"), |p| p);
+            let styles = args.styles.map_or(misc::get_local_path("pickers.css"), |p| p);
 
             println!("  Styles path: {}", styles.display());
             println!("  Config path: {}", config.display());

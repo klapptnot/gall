@@ -67,7 +67,7 @@ pub(crate) fn apply_styles(filepath: &PathBuf) {
 pub(crate) fn get_local_path(name: &str) -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
-        .unwrap_or("".into())
+        .expect("HOME env var is not set")
         .join(crate::LOCAL_PATH)
         .join(name)
 }
@@ -142,46 +142,41 @@ pub(crate) fn expand_tilde<P: AsRef<Path>>(path: P) -> Option<std::path::PathBuf
 }
 
 pub(crate) fn load_config(filepath: &PathBuf) -> ConfigLoad {
-    // How is this supposed to fail? Why do I return Option<PathBuf>? Idk
     let desktop_paths = crate::DESKTOP_PATHS.map(expand_tilde).map(Option::unwrap);
 
-    let apps = load_apps(&desktop_paths);
-
-    let data = match std::fs::read_to_string(&filepath) {
-        Ok(d) => d,
-        Err(e) => {
+    let cfg = std::fs::read_to_string(&filepath)
+        .map_err(|e| {
             eprintln!(
                 "Error reading config file {}: {}",
                 filepath.to_str().unwrap_or("<none>"),
                 e
             );
-            return ConfigLoad {
-                css_reload: false,
-                apps,
-            };
-        }
+        })
+        .and_then(|data| {
+            toml::from_str::<ConfigLoad>(&data).map_err(|e| {
+                eprintln!(
+                    "Error loading config file {}: {}",
+                    filepath.to_str().unwrap_or("<none>"),
+                    e.message()
+                );
+            })
+        });
+
+    let mut cfg = match cfg {
+        Ok(cfg) => cfg,
+        Err(_) => ConfigLoad {
+            css_reload: false,
+            terminal: None,
+            apps: Vec::new(),
+        },
     };
 
-    match toml::from_str::<ConfigLoad>(&data) {
-        Ok(mut cfg) => {
-            cfg.apps.extend(apps);
-            cfg
-        }
-        Err(e) => {
-            eprintln!(
-                "Error parsing config file {}: {}",
-                filepath.to_str().unwrap_or("<none>"),
-                e
-            );
-            ConfigLoad {
-                css_reload: false,
-                apps,
-            }
-        }
-    }
+    let apps = load_apps(&desktop_paths, &cfg.terminal);
+    cfg.apps.extend(apps);
+    cfg
 }
 
-fn parse_desktop_file<P: AsRef<Path>>(filepath: P) -> Option<AppEntry> {
+fn parse_desktop_file<P: AsRef<Path>>(filepath: P, term: &Option<String>) -> Option<AppEntry> {
     let content = std::fs::read_to_string(filepath).ok()?;
 
     let start_idx = content.find("[Desktop Entry]")?;
@@ -202,6 +197,7 @@ fn parse_desktop_file<P: AsRef<Path>>(filepath: P) -> Option<AppEntry> {
         "Exec",
         "Type",
         "NoDisplay",
+        "Terminal",
     ];
 
     for line in section.lines() {
@@ -226,6 +222,14 @@ fn parse_desktop_file<P: AsRef<Path>>(filepath: P) -> Option<AppEntry> {
         return None;
     }
 
+    let term_app = fields
+        .get("Terminal")
+        .map_or(false, |v| v.eq_ignore_ascii_case("true"));
+
+    if term_app && term.is_none() {
+        return None;
+    }
+
     if fields.get("Type").map_or("", |v| v).to_string() != "Application" {
         return None;
     }
@@ -247,6 +251,12 @@ fn parse_desktop_file<P: AsRef<Path>>(filepath: P) -> Option<AppEntry> {
         .replace("=%U", "")
         .replace("=%u", "");
 
+    let cleaned_exec = if term_app {
+        format!("{} {cleaned_exec}", term.as_ref().unwrap())
+    } else {
+        cleaned_exec
+    };
+
     Some(AppEntry {
         name: name.to_string(),
         genc: fields.get("GenericName").map_or(None, |v| Some(v.to_string())),
@@ -256,14 +266,14 @@ fn parse_desktop_file<P: AsRef<Path>>(filepath: P) -> Option<AppEntry> {
     })
 }
 
-fn load_apps(desktop_paths: &[std::path::PathBuf]) -> Vec<AppEntry> {
+fn load_apps(desktop_paths: &[std::path::PathBuf], term: &Option<String>) -> Vec<AppEntry> {
     let mut apps = Vec::new();
     for path in desktop_paths {
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 if let Some(filename) = entry.file_name().to_str() {
                     if filename.ends_with(".desktop") {
-                        if let Some(desktop_app) = parse_desktop_file(entry.path()) {
+                        if let Some(desktop_app) = parse_desktop_file(entry.path(), &term) {
                             apps.push(desktop_app);
                         }
                     }
