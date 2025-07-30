@@ -3,26 +3,26 @@ mod blocks;
 mod config;
 mod misc;
 mod pickers;
+mod socket;
 
+use gtk4 as gtk;
+
+use clap::Parser;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use clap::Parser;
 use gtk::gio::ApplicationFlags;
 use gtk::prelude::*;
 use gtk::{glib, Application, ApplicationWindow};
-use gtk4 as gtk;
 
 use config::ConfigLoad;
 use pickers::{Picker, PickerKind};
+use socket::AppMessage;
 
 type PickerCurr = Arc<Mutex<Option<Arc<dyn Picker>>>>;
 type PickerList = Arc<Mutex<Vec<Arc<dyn Picker>>>>;
 
-const SIGNAL_APPS: i32 = libc::SIGUSR1;
-const SIGNAL_RELOAD: i32 = libc::SIGWINCH;
 const GTK_APP_ID: &str = "xyz.gall.pickers";
-const PID_FILE_PATH: &str = "gall-daemon.lock";
 const LOCAL_PATH: &str = ".config/gall";
 const DESKTOP_PATHS: [&str; 3] = [
     "/usr/share/applications/",
@@ -33,14 +33,16 @@ const DESKTOP_PATHS: [&str; 3] = [
 struct AppState {
     config_path: PathBuf,
     styles_path: PathBuf,
+    msg_queue: socket::MessageQueue,
     config: Arc<ConfigLoad>,
 }
 
 impl AppState {
-    fn new(config_path: PathBuf, styles_path: PathBuf, config: Arc<ConfigLoad>) -> Self {
+    fn new(config_path: PathBuf, styles_path: PathBuf, msg_queue: socket::MessageQueue, config: Arc<ConfigLoad>) -> Self {
         Self {
             config_path,
             styles_path,
+            msg_queue,
             config,
         }
     }
@@ -76,12 +78,12 @@ impl GallApp {
         }
     }
 
-    pub fn load(&self, app: &Arc<GallApp>) -> &Self {
-        let state = self.state.clone();
-        let locked = state.lock().unwrap();
-        misc::apply_styles(&locked.styles_path);
-
+    pub fn load(&self, app: Arc<GallApp>) -> &Self {
         {
+            let state = self.state.clone();
+            let locked = state.lock().unwrap();
+            misc::apply_styles(&locked.styles_path);
+
             let mut pickers_lock = self.pickers.lock().unwrap();
 
             for kind in PickerKind::variants() {
@@ -92,26 +94,66 @@ impl GallApp {
                 cpick.if_done(Box::new(move || win.hide()));
                 pickers_lock.push(cpick);
             }
+
+            let write_queue = locked.msg_queue.clone();
+            std::thread::spawn(move || socket::start_socket_listener(write_queue));
+            println!("🔌Starting socket listener on {}", socket::get_socket_path().to_str().expect("path to be valid string"));
         }
-        drop(locked);
 
         {
+            let locked = self.state.lock().unwrap();
+            let queue_for_idle = Arc::clone(&locked.msg_queue);
+            drop(locked);
+
+            let state = self.state.clone();
+            let window = self.window.clone();
             let picker = self.picker.clone();
             let pickers = self.pickers.clone();
-            let window = self.window.clone();
+            let gtk_app = self.app.clone();
 
-            glib::source::unix_signal_add_local(SIGNAL_APPS, move || {
-                let locked = state.lock().unwrap();
+            glib::idle_add_local(move || {
+                let Ok(mut queue) = queue_for_idle.lock() else {
+                    return glib::ControlFlow::Continue;
+                };
 
-                if locked.config.css_reload {
-                    misc::apply_styles(&locked.styles_path);
-                }
+                let Some(message) = queue.pop_front() else {
+                    return glib::ControlFlow::Continue;
+                };
 
-                if window.is_visible() {
-                    window.hide();
-                } else {
-                    picker_switch(&pickers, &picker, PickerKind::Apps);
-                    window.show();
+                let message = AppMessage::from(message);
+                println!("📨Got Message: {message:?}");
+                match message {
+                    AppMessage::TogglePicker(kind) => {
+                        let locked = state.lock().unwrap();
+
+                        if locked.config.css_reload {
+                            misc::apply_styles(&locked.styles_path);
+                        }
+
+                        if window.is_visible() {
+                            window.hide();
+                            return glib::ControlFlow::Continue;
+                        }
+
+                        picker_switch(&pickers, &picker, kind);
+                        window.show();
+                    }
+                    AppMessage::AppReload => {
+                        let mut locked = state.lock().unwrap();
+                        misc::apply_styles(&locked.styles_path);
+                        locked.config = config::load_config(&locked.config_path);
+
+                        let pickers_lock = pickers.lock().unwrap();
+                        for it in &*pickers_lock {
+                            it.reload(&locked.config);
+                        }
+                    }
+                    AppMessage::AppClose => {
+                        gtk_app.quit();
+                    }
+                    AppMessage::AppPing => {
+                        let _ = socket::send_message(AppMessage::AppPing);
+                    }
                 }
 
                 glib::ControlFlow::Continue
@@ -123,7 +165,6 @@ impl GallApp {
 
             window.connect_close_request(move |window| {
                 window.hide();
-
                 glib::Propagation::Stop
             });
         }
@@ -143,7 +184,11 @@ fn picker_switch(pickers: &PickerList, picker: &PickerCurr, kind: PickerKind) {
     }
 }
 
-fn gtk_main(config: PathBuf, styles: PathBuf, open_on_load: bool) -> glib::ExitCode {
+fn gtk_main(config: PathBuf, styles: PathBuf, stay_here: bool) -> glib::ExitCode {
+    if !stay_here {
+        misc::daemonize();
+    }
+
     let app = Application::builder()
         .application_id(GTK_APP_ID)
         .flags(ApplicationFlags::FLAGS_NONE | ApplicationFlags::HANDLES_COMMAND_LINE)
@@ -156,21 +201,28 @@ fn gtk_main(config: PathBuf, styles: PathBuf, open_on_load: bool) -> glib::ExitC
         glib::ExitCode::SUCCESS
     });
 
+
     app.connect_activate(move |app| {
+        let message_queue: socket::MessageQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
         let state = Arc::new(Mutex::new(AppState::new(
             config.to_path_buf(),
             styles.to_path_buf(),
+            message_queue,
             config::load_config(&config),
         )));
         let app_win = Arc::new(GallApp::new(app, state));
-        app_win.load(&app_win);
-
-        println!("  init () ➜ 🩵!");
+        app_win.load(app_win.clone());
     });
 
-    if !open_on_load {
-        misc::daemonize();
-    }
+    app.connect_shutdown(move |app_ref| {
+        let _ = std::fs::remove_file(socket::get_socket_path());
+        app_ref.quit();
+    });
+
+    glib::source::unix_signal_add(libc::SIGINT, || {
+        let _ = std::fs::remove_file(socket::get_socket_path());
+        glib::ControlFlow::Break
+    });
 
     app.run()
 }
@@ -180,9 +232,13 @@ fn main() {
 
     match cli.command {
         args::Commands::Start(args) => {
-            if misc::daemon_is_running() {
+            if socket::process_is_running() {
                 eprintln!("Process is already running!");
                 std::process::exit(0)
+            }
+
+            if socket::get_socket_path().exists() {
+                std::fs::remove_file(socket::get_socket_path()).expect("Unable to unlink socket!");
             }
 
             let config = args.config.map_or(misc::get_local_path("pickers.toml"), |p| p);
@@ -197,37 +253,33 @@ fn main() {
 
             gtk_main(config, styles, args.here);
         }
-        args::Commands::Stop(args) => {
-            if !misc::daemon_is_running() {
-                eprintln!("Process is already dead!");
-                std::process::exit(0)
-            }
-
-            if args.force {
-                println!("🛑 Force shutdown requested...");
-                misc::send_signal(libc::SIGKILL);
-            } else {
-                println!("🛑 Stopping daemon...");
-                misc::send_signal(libc::SIGINT);
-
-                let pid = misc::read_pid_file().expect("PID file missing or bad formatted!");
+        args::Commands::Stop => {
+            if socket::process_is_running() {
+                match socket::send_message(AppMessage::AppClose) {
+                    Err(e) => eprintln!("Failed to send: {e}"),
+                    _ => (),
+                }
 
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                if misc::process_is_running(pid) {
+                if socket::process_is_running() {
                     eprintln!("Process hasn't stopped after 500ms, try `--force`");
                     std::process::exit(1);
                 }
+            } else {
+                eprintln!("Process is already dead!");
             }
 
-            std::fs::remove_file(misc::pid_file_path()).expect("Unable to remove PID file!");
+            if socket::get_socket_path().exists() {
+                std::fs::remove_file(socket::get_socket_path()).expect("Unable to unlink socket!");
+            }
         }
-        args::Commands::Apps => {
-            println!("🔄 Toggling launcher visibility...");
-            misc::send_signal(SIGNAL_APPS);
-        }
-        args::Commands::Reload => {
-            println!("♻️  Reloading daemon configuration...");
-            misc::send_signal(SIGNAL_RELOAD);
-        }
+        args::Commands::Apps => match socket::send_message(AppMessage::TogglePicker(PickerKind::Apps)) {
+            Err(e) => eprintln!("Failed to send: {e}"),
+            _ => (),
+        },
+        args::Commands::Reload => match socket::send_message(AppMessage::AppReload) {
+            Err(e) => eprintln!("Failed to send: {e}"),
+            _ => (),
+        },
     }
 }

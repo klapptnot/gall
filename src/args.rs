@@ -20,7 +20,7 @@ pub enum Commands {
     /// Start the daemon with specified configuration
     Start(DaemonArgs),
     /// Stop the running daemon
-    Stop(StopArgs),
+    Stop,
     /// Toggle the app launcher visibility
     Apps,
     /// Reload daemon configuration
@@ -40,11 +40,4 @@ pub struct DaemonArgs {
     /// Keep open here, without daemon behavior
     #[arg(long)]
     pub here: bool,
-}
-
-#[derive(Args)]
-pub struct StopArgs {
-    /// Force stop the daemon without graceful shutdown
-    #[arg(short, long)]
-    pub force: bool,
 }

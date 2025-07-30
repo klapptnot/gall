@@ -162,64 +162,6 @@ pub(crate) fn fuzzy(s: &str, pattern: &str) -> bool {
     true
 }
 
-pub(crate) fn send_signal(sig: i32) {
-    let Ok(pid) = read_pid_file() else {
-        println!("PID file missing or bad formatted!");
-        std::process::exit(1);
-    };
-
-    if !process_is_running(pid) {
-        eprintln!("Process with PID {} is already dead!", pid);
-        std::process::exit(1);
-    }
-
-    unsafe {
-        if libc::kill(pid, sig) != 0 {
-            eprintln!("Failed to send signal to daemon (PID: {})", pid);
-            std::process::exit(1);
-        }
-    }
-}
-
-pub(crate) fn read_pid_file() -> Result<i32, Box<dyn std::error::Error>> {
-    let pidfile = pid_file_path();
-
-    if pidfile.exists() && pidfile.is_file() {
-        let pid_str = std::fs::read_to_string(pidfile)?;
-        Ok(pid_str.trim().parse()?)
-    } else {
-        Err("".into())
-    }
-}
-
-pub(crate) fn daemon_is_running() -> bool {
-    let pidfile = pid_file_path();
-
-    if !pidfile.exists() || !pidfile.is_file() {
-        return false;
-    }
-
-    let Ok(pid) = read_pid_file() else {
-        println!("PID file missing or bad formatted!");
-        std::process::exit(1);
-    };
-
-    process_is_running(pid)
-}
-
-#[inline]
-pub(crate) fn process_is_running(pid: i32) -> bool {
-    std::fs::metadata(format!("/proc/{}", pid)).is_ok()
-}
-
-#[inline]
-pub(crate) fn pid_file_path() -> PathBuf {
-    std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .map(|p| p.join(crate::PID_FILE_PATH))
-        .expect("Could not get XDG_RUNTIME_DIR")
-}
-
 #[inline]
 pub(crate) fn daemonize() {
     unsafe {
@@ -228,9 +170,4 @@ pub(crate) fn daemonize() {
             std::process::exit(1);
         }
     }
-
-    let pidfile = pid_file_path();
-
-    let pid = std::process::id();
-    std::fs::write(pidfile, pid.to_string()).expect("Failed to write PID file");
 }
