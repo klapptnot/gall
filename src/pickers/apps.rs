@@ -1,8 +1,9 @@
 use crate::{
+    config::{AppEntry, ConfigLoad},
     gtk::{self, gdk, glib},
     misc,
     pickers::{self, Picker},
-    AppEntry, GallApp,
+    GallApp,
 };
 use gtk::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -56,7 +57,7 @@ impl AppPicker {
 }
 
 impl Picker for AppPicker {
-    fn load(&self, config: &crate::ConfigLoad) -> bool {
+    fn load(&self, config: &ConfigLoad) -> bool {
         self.reload(config);
         app_picker_control(&self);
 
@@ -86,7 +87,7 @@ impl Picker for AppPicker {
         state.callback = Arc::new(Some(callback));
     }
 
-    fn reload(&self, config: &crate::ConfigLoad) {
+    fn reload(&self, config: &ConfigLoad) {
         let mut state = self.state.lock().unwrap();
 
         state.fil_apps = config.apps.len() as u32;
@@ -130,7 +131,7 @@ fn apps_populate_list(listbox: &gtk::ListBox, state: &Arc<Mutex<AppPickerState>>
     listbox.show();
 }
 
-fn create_app_row(app: &crate::AppEntry) -> gtk::ListBoxRow {
+fn create_app_row(app: &AppEntry) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_widget_name("app-row");
 

@@ -1,6 +1,9 @@
 pub(crate) mod apps;
 
-use crate::{gtk, Arc, GallApp};
+use crate::{
+    gtk, Arc, GallApp,
+    config::ConfigLoad
+};
 use gtk::prelude::{BoxExt, WidgetExt};
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -10,10 +13,10 @@ pub(crate) enum PickerKind {
 }
 
 pub trait Picker {
-    fn load(&self, config: &crate::ConfigLoad) -> bool;
+    fn load(&self, config: &ConfigLoad) -> bool;
     fn show(&self, current: PickerKind) -> bool;
     fn kind(&self) -> PickerKind;
-    fn reload(&self, config: &crate::ConfigLoad);
+    fn reload(&self, config: &ConfigLoad);
     fn if_done(&self, callback: Box<dyn Fn()>);
 }
 

@@ -1,19 +1,20 @@
-use gtk4 as gtk;
+mod args;
+mod blocks;
+mod config;
+mod misc;
+mod pickers;
 
-use clap::Parser;
-use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use clap::Parser;
 use gtk::gio::ApplicationFlags;
 use gtk::prelude::*;
 use gtk::{glib, Application, ApplicationWindow};
-use pickers::{Picker, PickerKind};
+use gtk4 as gtk;
 
-mod pickers;
-mod args;
-mod blocks;
-mod misc;
+use config::ConfigLoad;
+use pickers::{Picker, PickerKind};
 
 type PickerCurr = Arc<Mutex<Option<Arc<dyn Picker>>>>;
 type PickerList = Arc<Mutex<Vec<Arc<dyn Picker>>>>;
@@ -28,24 +29,6 @@ const DESKTOP_PATHS: [&str; 3] = [
     "/usr/local/share/applications/",
     "~/.local/share/applications/",
 ];
-
-#[derive(Debug, Deserialize, Clone)]
-struct AppEntry {
-    pub name: String,
-    #[serde(rename = "generic")]
-    pub genc: Option<String>,
-    #[serde(rename = "description")]
-    pub desc: Option<String>,
-    pub icon: Option<String>,
-    pub exec: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ConfigLoad {
-    pub css_reload: bool,
-    pub terminal: Option<String>,
-    pub apps: Vec<AppEntry>,
-}
 
 struct AppState {
     config_path: PathBuf,
@@ -95,9 +78,8 @@ impl GallApp {
 
     pub fn load(&self, app: &Arc<GallApp>) -> &Self {
         let state = self.state.clone();
-        let mut locked = state.lock().unwrap();
+        let locked = state.lock().unwrap();
         misc::apply_styles(&locked.styles_path);
-        locked.config = misc::load_config(&locked.config_path);
 
         {
             let mut pickers_lock = self.pickers.lock().unwrap();
@@ -178,7 +160,7 @@ fn gtk_main(config: PathBuf, styles: PathBuf, open_on_load: bool) -> glib::ExitC
         let state = Arc::new(Mutex::new(AppState::new(
             config.to_path_buf(),
             styles.to_path_buf(),
-            misc::load_config(&config),
+            config::load_config(&config),
         )));
         let app_win = Arc::new(GallApp::new(app, state));
         app_win.load(&app_win);
