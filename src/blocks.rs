@@ -1,164 +1,10 @@
-use std::sync::Arc;
-use std::sync::Mutex;
-
 use crate::gtk;
 use crate::misc;
-use crate::{AppState, Picker};
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
-pub(crate) fn generic_picker_box() -> Picker {
-    let mainbox = gtk::Box::builder()
-        .name("main-box")
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(0)
-        .build();
-
-    let box_input = gtk::Box::builder()
-        .name("search-box")
-        .spacing(5)
-        .margin_start(10)
-        .margin_end(10)
-        .margin_top(10)
-        .margin_bottom(5)
-        .build();
-
-    let search_input = gtk::Entry::builder()
-        .name("search-input")
-        .placeholder_text("Type to search apps...")
-        .build();
-    search_input.set_hexpand(true);
-
-    let toggle_btn = gtk::Button::builder().name("toggle-button").build();
-
-    let scroll_apps = gtk::ScrolledWindow::builder()
-        .name("apps-scroll")
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .overflow(gtk::Overflow::Hidden)
-        .margin_start(10)
-        .margin_end(10)
-        .margin_top(10)
-        .margin_bottom(10)
-        .build();
-    scroll_apps.set_vexpand(true);
-
-    let listbox = gtk::ListBox::builder()
-        .name("apps-list")
-        .selection_mode(gtk::SelectionMode::Single)
-        .vexpand_set(true)
-        .build();
-
-    box_input.append(&search_input);
-    box_input.append(&toggle_btn);
-
-    scroll_apps.set_child(Some(&listbox));
-
-    mainbox.append(&box_input);
-    mainbox.append(&scroll_apps);
-
-    Picker {
-        mainbox,
-        search_input,
-        toggle_btn,
-        listbox,
-    }
-}
-
-pub(crate) fn apps_populate_list(listbox: &gtk::ListBox, state: &Arc<Mutex<AppState>>, pattern: &str) {
-    while let Some(child) = listbox.first_child() {
-        listbox.remove(&child);
-    }
-
-    let mut locked = state.lock().unwrap();
-
-    locked
-        .all_apps
-        .iter()
-        .filter(|e| {
-            if locked.name_fuzz {
-                misc::fuzzy(&e.name, pattern)
-            } else {
-                misc::fuzzy(&e.genc.clone().unwrap_or("".to_owned()), pattern)
-                    || misc::fuzzy(&e.desc.clone().unwrap_or("".to_owned()), pattern)
-            }
-        })
-        .for_each(|e| {
-            let app_row = create_app_row(e);
-            listbox.append(&app_row);
-        });
-
-    locked.fil_apps = listbox.observe_children().n_items();
-
-    if locked.selected > locked.fil_apps {
-        locked.selected = 0
-    }
-
-    listbox.select_row(listbox.row_at_index(locked.selected as i32).as_ref());
-
-    listbox.show();
-}
-
-pub(crate) fn create_app_row(app: &crate::AppEntry) -> gtk::ListBoxRow {
-    let row = gtk::ListBoxRow::new();
-    row.set_widget_name("app-row");
-
-    unsafe { row.set_data("exec", app.exec.clone()) };
-
-    let hbox = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(2)
-        .margin_start(10)
-        .margin_end(10)
-        .margin_top(5)
-        .margin_bottom(5)
-        .build();
-
-    if let Some(icon_str) = &app.icon {
-        if let Some(icon) = create_icon_widget(icon_str, 48) {
-            hbox.append(&icon);
-        }
-    }
-
-    let text_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
-        .build();
-
-    let name_markup = match &app.genc {
-        Some(g) if g != &app.name => format!(
-            "<b>{}</b> - <i>{}</i>",
-            glib::markup_escape_text(&app.name),
-            glib::markup_escape_text(g),
-        ),
-        _ => format!("<b>{}</b>", glib::markup_escape_text(&app.name)),
-    };
-
-    let name_label = gtk::Label::new(None);
-    name_label.set_markup(&name_markup);
-    name_label.set_halign(gtk::Align::Start);
-    text_box.append(&name_label);
-
-    if let Some(desc) = &app.desc {
-        let short_desc = if desc.len() > 60 {
-            format!("{}...", &desc[..60])
-        } else {
-            desc.clone()
-        };
-        let desc_label = gtk::Label::new(Some(&short_desc));
-        desc_label.set_halign(gtk::Align::Start);
-        desc_label.style_context().add_class("dim-label");
-        text_box.append(&desc_label);
-    }
-
-    hbox.append(&text_box);
-    row.set_child(Some(&hbox));
-
-    row
-}
-
-fn create_icon_widget(icon_str: &str, size: i32) -> Option<gtk::Image> {
+pub fn create_icon_widget(icon_str: &str, size: i32) -> Option<gtk::Image> {
     let path = misc::expand_tilde(icon_str).expect("could not expand path");
     if path.is_file() {
         if let Ok(texture) = gdk::Texture::from_file(&gtk::gio::File::for_path(&path)) {
@@ -217,10 +63,7 @@ pub(crate) fn create_error_window(app: &gtk::Application, error: misc::CommandEr
         .halign(gtk::Align::Start)
         .build();
 
-    reason_label.set_markup(&format!(
-        "<span size=\"16000\"><b>{}</b></span>",
-        error.reason
-    ));
+    reason_label.set_markup(&format!("<span size=\"16000\"><b>{}</b></span>", error.reason));
     vbox.append(&reason_label);
 
     let button_box = gtk::Box::builder()

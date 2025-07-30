@@ -8,15 +8,17 @@ use std::sync::{Arc, Mutex};
 use gtk::gio::ApplicationFlags;
 use gtk::prelude::*;
 use gtk::{glib, Application, ApplicationWindow};
+use pickers::{Picker, PickerKind};
 
-mod action;
+mod pickers;
 mod args;
 mod blocks;
 mod misc;
 
+type PickerCurr = Arc<Mutex<Option<Arc<dyn Picker>>>>;
+type PickerList = Arc<Mutex<Vec<Arc<dyn Picker>>>>;
+
 const SIGNAL_APPS: i32 = libc::SIGUSR1;
-#[allow(dead_code)]
-const SIGNAL_CLIPBOARD: i32 = libc::SIGUSR2;
 const SIGNAL_RELOAD: i32 = libc::SIGWINCH;
 const GTK_APP_ID: &str = "xyz.gall.pickers";
 const PID_FILE_PATH: &str = "gall-daemon.lock";
@@ -27,72 +29,46 @@ const DESKTOP_PATHS: [&str; 3] = [
     "~/.local/share/applications/",
 ];
 
+#[derive(Debug, Deserialize, Clone)]
+struct AppEntry {
+    pub name: String,
+    #[serde(rename = "generic")]
+    pub genc: Option<String>,
+    #[serde(rename = "description")]
+    pub desc: Option<String>,
+    pub icon: Option<String>,
+    pub exec: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ConfigLoad {
-    css_reload: bool,
-    terminal: Option<String>,
-    apps: Vec<AppEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AppEntry {
-    name: String,
-    #[serde(rename = "generic")]
-    genc: Option<String>,
-    #[serde(rename = "description")]
-    desc: Option<String>,
-    icon: Option<String>,
-    exec: String,
-}
-
-#[derive(PartialEq)]
-enum PickerKind {
-    Apps,
-    #[allow(dead_code)]
-    Clipboard,
-    None,
+    pub css_reload: bool,
+    pub terminal: Option<String>,
+    pub apps: Vec<AppEntry>,
 }
 
 struct AppState {
-    config: PathBuf,
-    styles: PathBuf,
-    visible: bool,
-    pick_kind: PickerKind,
-    name_fuzz: bool,
-    selected: u32,
-    css_reload: bool,
-    all_apps: Vec<AppEntry>,
-    fil_apps: u32,
+    config_path: PathBuf,
+    styles_path: PathBuf,
+    config: Arc<ConfigLoad>,
 }
 
 impl AppState {
-    fn new(config: PathBuf, styles: PathBuf) -> Self {
+    fn new(config_path: PathBuf, styles_path: PathBuf, config: Arc<ConfigLoad>) -> Self {
         Self {
+            config_path,
+            styles_path,
             config,
-            styles,
-            visible: false,
-            pick_kind: PickerKind::None,
-            name_fuzz: true,
-            selected: 0,
-            css_reload: false,
-            all_apps: Vec::new(),
-            fil_apps: 0,
         }
     }
-}
-
-struct Picker {
-    mainbox: gtk::Box,
-    search_input: gtk::Entry,
-    toggle_btn: gtk::Button,
-    listbox: gtk::ListBox,
 }
 
 struct GallApp {
     app: Application,
     state: Arc<Mutex<AppState>>,
-    window: ApplicationWindow,
-    pickers: [Arc<Picker>; 1],
+    window: Arc<ApplicationWindow>,
+    pickers: PickerList,
+    picker: PickerCurr,
 }
 
 impl GallApp {
@@ -108,109 +84,80 @@ impl GallApp {
             .decorated(false)
             .build();
 
-        let picker = Arc::new(blocks::generic_picker_box());
-
         Self {
             app: app.clone(),
             state,
-            window,
-            pickers: [picker.clone()],
+            window: Arc::new(window),
+            pickers: Arc::new(Mutex::new(Vec::with_capacity(PickerKind::None as usize))),
+            picker: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn load(&self, app: &Arc<GallApp>) -> &Self {
         let state = self.state.clone();
         let mut locked = state.lock().unwrap();
-        misc::apply_styles(&locked.styles);
-        let config = misc::load_config(&locked.config);
-
-        locked.all_apps = config.apps;
-        locked.css_reload = config.css_reload;
+        misc::apply_styles(&locked.styles_path);
+        locked.config = misc::load_config(&locked.config_path);
 
         {
-            let selfr = app.clone();
-            let picker = selfr.pickers[0].clone();
-            let window = selfr.window.clone();
-            let search_input = picker.search_input.clone();
-            let state = selfr.state.clone();
-            let listbox = picker.listbox.clone();
+            let mut pickers_lock = self.pickers.lock().unwrap();
+
+            for kind in PickerKind::variants() {
+                let win = self.window.clone();
+                let cpick = PickerKind::from_kind(&kind, app.clone());
+
+                cpick.load(&locked.config);
+                cpick.if_done(Box::new(move || win.hide()));
+                pickers_lock.push(cpick);
+            }
+        }
+        drop(locked);
+
+        {
+            let picker = self.picker.clone();
+            let pickers = self.pickers.clone();
+            let window = self.window.clone();
 
             glib::source::unix_signal_add_local(SIGNAL_APPS, move || {
-                search_input.set_text("");
-                let mut locked = state.lock().unwrap();
-                locked.selected = 0;
-                listbox.select_row(listbox.row_at_index(0).as_ref());
+                let locked = state.lock().unwrap();
 
-                locked.visible = !locked.visible;
-
-                if locked.css_reload {
-                    misc::apply_styles(&locked.styles);
+                if locked.config.css_reload {
+                    misc::apply_styles(&locked.styles_path);
                 }
 
-                if locked.pick_kind == PickerKind::Apps {
-                    if !locked.visible {
-                        window.hide();
-                    } else {
-                        window.show();
-                        search_input.grab_focus();
-                    }
-
-                    return glib::ControlFlow::Continue;
-                }
-
-                // !!visible
-                if locked.visible {
+                if window.is_visible() {
+                    window.hide();
+                } else {
+                    picker_switch(&pickers, &picker, PickerKind::Apps);
                     window.show();
                 }
-
-                locked.pick_kind = PickerKind::Apps;
-                search_input.grab_focus();
-
-                drop(locked); // load_app_picker locks mutex
-
-                selfr.load_app_picker();
 
                 glib::ControlFlow::Continue
             });
         }
 
         {
-            // let selfr = app.clone();
-            let picker = self.pickers[0].clone();
             let window = self.window.clone();
-            let search_input = picker.search_input.clone();
-            let listbox = picker.listbox.clone();
-            let state = self.state.clone();
 
             window.connect_close_request(move |window| {
-                let mut locked = state.lock().unwrap();
-                locked.visible = false;
                 window.hide();
 
-                search_input.set_text("");
-                listbox.select_row(listbox.row_at_index(0).as_ref());
                 glib::Propagation::Stop
             });
         }
 
-        action::set_picker_control(&self, &self.pickers[0]);
-        action::app_picker_control(&self, &self.pickers[0]);
-
         self
     }
+}
 
-    pub fn load_app_picker(&self) -> &Self {
-        let state = self.state.clone();
-        let picker = &self.pickers[0];
+fn picker_switch(pickers: &PickerList, picker: &PickerCurr, kind: PickerKind) {
+    let mut picker_lock = picker.lock().unwrap();
+    let pickers_lock = pickers.lock().unwrap();
+    let cur_kind = picker_lock.as_ref().map_or(PickerKind::None, |ref p| p.kind());
 
-        self.window.set_child(Some(&picker.mainbox));
-        blocks::apps_populate_list(&picker.listbox, &state, "");
-        picker.search_input.grab_focus();
-
-        let _ = &picker.toggle_btn.set_icon_name("edit-find-symbolic");
-        let _ = &picker.toggle_btn.set_tooltip_text(Some("Search by name"));
-
-        self
+    let picker = &pickers_lock[kind as usize];
+    if picker.show(cur_kind) {
+        *picker_lock = Some(picker.clone());
     }
 }
 
@@ -231,6 +178,7 @@ fn gtk_main(config: PathBuf, styles: PathBuf, open_on_load: bool) -> glib::ExitC
         let state = Arc::new(Mutex::new(AppState::new(
             config.to_path_buf(),
             styles.to_path_buf(),
+            misc::load_config(&config),
         )));
         let app_win = Arc::new(GallApp::new(app, state));
         app_win.load(&app_win);

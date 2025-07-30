@@ -1,4 +1,4 @@
-use gtk4 as gtk;
+use crate::{gtk, Arc};
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -141,7 +141,7 @@ pub(crate) fn expand_tilde<P: AsRef<Path>>(path: P) -> Option<std::path::PathBuf
         })
 }
 
-pub(crate) fn load_config(filepath: &PathBuf) -> ConfigLoad {
+pub(crate) fn load_config(filepath: &PathBuf) -> Arc<ConfigLoad> {
     let desktop_paths = crate::DESKTOP_PATHS.map(expand_tilde).map(Option::unwrap);
 
     let cfg = std::fs::read_to_string(&filepath)
@@ -173,7 +173,8 @@ pub(crate) fn load_config(filepath: &PathBuf) -> ConfigLoad {
 
     let apps = load_apps(&desktop_paths, &cfg.terminal);
     cfg.apps.extend(apps);
-    cfg
+
+    Arc::new(cfg)
 }
 
 fn parse_desktop_file<P: AsRef<Path>>(filepath: P, term: &Option<String>) -> Option<AppEntry> {
@@ -335,8 +336,6 @@ pub(crate) fn send_signal(sig: i32) {
             std::process::exit(1);
         }
     }
-
-    println!("Signal {} sent to daemon (PID: {})", sig, pid);
 }
 
 pub(crate) fn read_pid_file() -> Result<i32, Box<dyn std::error::Error>> {
