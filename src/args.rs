@@ -19,12 +19,12 @@ pub struct Cli {
 pub enum Commands {
     /// Start the daemon with specified configuration
     Start(DaemonArgs),
+    /// Reload daemon configuration
+    Reload,
     /// Stop the running daemon
     Stop,
     /// Toggle the app launcher visibility
     Apps,
-    /// Reload daemon configuration
-    Reload,
 }
 
 #[derive(Args)]
@@ -37,7 +37,7 @@ pub struct DaemonArgs {
     #[arg(short, long, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Keep open here, without daemon behavior
-    #[arg(long)]
-    pub here: bool,
+    /// Keep app open; it will not fork or detach
+    #[arg(long = "keep-open", short = 'k')]
+    pub keep_open: bool,
 }

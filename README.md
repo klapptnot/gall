@@ -1,10 +1,10 @@
 # Gall 🚀
 
-A simple GTK-based application selector and launcher daemon.
+A simple GTK-based picker daemon.
 
 ## Overview
 
-Gall is a application launcher that provides a clean GTK interface for quickly finding and launching your favorite applications. It runs as a daemon in the background and can be toggled on demand.
+Gall is a picker manager that provides a clean GTK interface for quick actions. It runs as a daemon in the background and can be toggled on demand.
 
 ## Installation
 
@@ -18,17 +18,14 @@ cargo install --path .
 ### Starting the Daemon
 
 ```bash
-# Start with default configuration
+# Start with default configuration (paths)
 gall start
 
 # Start with custom styles and config
 gall start --styles ./my-styles.css --config ./my-config.toml
 
-# Enable CSS hot reloading for development
-gall start --reload-css
-
-# Start and immediately show the launcher
-gall start --open
+# Keep app attached to the caller process (no fork)
+gall start --keep-open
 ```
 
 ### Managing the Daemon
@@ -49,6 +46,7 @@ gall stop
 Create a configuration file (default: `~/.config/gall/config.toml`):
 
 ```toml
+# Reload CSS file for every time window is visible
 css_reload = false
 # Apps with Terminal=true will launch `kitty exec ...[args]`
 # These apps will be ignored if this is unset or empty
@@ -56,15 +54,15 @@ terminal = "kitty"
 
 [[apps]]
 name = "Hatsune Miku"
-generic = "CV01 - 初音ミク"
-description = "It's Hatsune Miku, what do you expect?"
+gend = "CV01 - 初音ミク"
+desc = "It's Hatsune Miku, what do you expect?"
 exec = "bash -c 'echo \"むかえにゆくよ！\"; sleep 1; echo \"信じてないんだよ、ね？\" >&2; exit 1'"
 icon = "~/Downloads/Hatsune_Miku.png"
 
 [[apps]]
 name = "Firefox"
-generic = "Web Browser"
-description = "Browse the web with Firefox"
+gend = "Web Browser"
+desc = "Browse the web with Firefox"
 exec = "firefox"
 icon = "firefox"
 ```
@@ -72,8 +70,8 @@ icon = "firefox"
 ### Configuration Fields
 
 - `name` - Display name for the application
-- `generic` - Generic name or category
-- `description` - Brief description of what the app does
+- `gend` - Generic name or category
+- `desc` - Brief description of what the app does
 - `exec` - Command to execute when launched
 - `icon` - Path to the application icon
 

@@ -60,22 +60,33 @@ impl Picker for AppPicker {
     fn load(&self, config: &ConfigLoad) -> bool {
         self.reload(config);
         app_picker_control(&self);
+        populate_app_list(&self.listbox, &self.state, "");
 
         true
     }
 
     fn show(&self, current: super::PickerKind) -> bool {
-        if current == self.kind() {
-            self.search_input.grab_focus();
-            return false;
+        let had_to_load = current != self.kind();
+
+        if had_to_load {
+            self.parent.window.set_child(Some(&self.mainbox));
+        }
+        self.listbox.select_row(self.listbox.row_at_index(0).as_ref());
+
+        let name_fuzz = {
+            let mut locked = self.state.lock().unwrap();
+            locked.selected = 0;
+            locked.name_fuzz
+        };
+
+        if !name_fuzz {
+            toggle_fuzzy_search_mode(&self.state, &self.toggle_btn);
         }
 
-        self.parent.window.set_child(Some(&self.mainbox));
         self.search_input.grab_focus();
-        self.search_input.set_text("");
-        apps_populate_list(&self.listbox, &self.state, "");
+        self.search_input.set_text(""); // calls populate_app_list if needed
 
-        true
+        had_to_load
     }
 
     fn kind(&self) -> super::PickerKind {
@@ -97,7 +108,7 @@ impl Picker for AppPicker {
     }
 }
 
-fn apps_populate_list(listbox: &gtk::ListBox, state: &Arc<Mutex<AppPickerState>>, pattern: &str) {
+fn populate_app_list(listbox: &gtk::ListBox, state: &Arc<Mutex<AppPickerState>>, pattern: &str) {
     while let Some(child) = listbox.first_child() {
         listbox.remove(&child);
     }
@@ -111,7 +122,7 @@ fn apps_populate_list(listbox: &gtk::ListBox, state: &Arc<Mutex<AppPickerState>>
             if locked.name_fuzz {
                 misc::fuzzy(&e.name, pattern)
             } else {
-                misc::fuzzy(&e.genc.clone().unwrap_or("".to_owned()), pattern)
+                misc::fuzzy(&e.gend.clone().unwrap_or("".to_owned()), pattern)
                     || misc::fuzzy(&e.desc.clone().unwrap_or("".to_owned()), pattern)
             }
         })
@@ -157,7 +168,7 @@ fn create_app_row(app: &AppEntry) -> gtk::ListBoxRow {
         .spacing(2)
         .build();
 
-    let name_markup = match &app.genc {
+    let name_markup = match &app.gend {
         Some(g) if g != &app.name => format!(
             "<b>{}</b> - <i>{}</i>",
             glib::markup_escape_text(&app.name),
@@ -189,7 +200,7 @@ fn create_app_row(app: &AppEntry) -> gtk::ListBoxRow {
     row
 }
 
-fn apps_toggle_search_mode(state: Arc<Mutex<AppPickerState>>, toggle_btn: &gtk::Button) {
+fn toggle_fuzzy_search_mode(state: &Arc<Mutex<AppPickerState>>, toggle_btn: &gtk::Button) {
     let mut locked = state.lock().unwrap();
     locked.name_fuzz = !locked.name_fuzz;
 
@@ -246,7 +257,7 @@ fn app_picker_control(picker: &AppPicker) {
 
         picker.search_input.connect_changed(move |entry| {
             let text = entry.text();
-            apps_populate_list(&listbox, &state, text.as_str());
+            populate_app_list(&listbox, &state, text.as_str());
         });
     }
 
@@ -266,7 +277,7 @@ fn app_picker_control(picker: &AppPicker) {
                     if search_input.text().is_empty() {
                         {
                             let pstate = picker_state.clone();
-                            apps_toggle_search_mode(pstate, &toggle_btn);
+                            toggle_fuzzy_search_mode(&pstate, &toggle_btn);
                         }
                     }
                     search_input.set_text("");
@@ -384,7 +395,7 @@ fn app_picker_control(picker: &AppPicker) {
         let state = picker.state.clone();
         picker.toggle_btn.connect_clicked(move |btn| {
             let state = state.clone();
-            apps_toggle_search_mode(state, btn);
+            toggle_fuzzy_search_mode(&state, btn);
         });
     }
 }

@@ -227,6 +227,12 @@ fn gtk_main(config: PathBuf, styles: PathBuf, stay_here: bool) -> glib::ExitCode
     app.run()
 }
 
+fn toggle_picker(kind: PickerKind) {
+    if let Err(e) = socket::send_message(AppMessage::TogglePicker(kind)) {
+        eprintln!("Failed to send: {e}");
+    }
+}
+
 fn main() {
     let cli = args::Cli::parse();
 
@@ -248,10 +254,10 @@ fn main() {
             println!("  Config path: {}", config.display());
             println!(
                 "  Daemonize: {}",
-                if !args.here { "enabled" } else { "disabled" }
+                if !args.keep_open { "enabled" } else { "disabled" }
             );
 
-            gtk_main(config, styles, args.here);
+            gtk_main(config, styles, args.keep_open);
         }
         args::Commands::Stop => {
             if socket::process_is_running() {
@@ -273,10 +279,7 @@ fn main() {
                 std::fs::remove_file(socket::get_socket_path()).expect("Unable to unlink socket!");
             }
         }
-        args::Commands::Apps => match socket::send_message(AppMessage::TogglePicker(PickerKind::Apps)) {
-            Err(e) => eprintln!("Failed to send: {e}"),
-            _ => (),
-        },
+        args::Commands::Apps => toggle_picker(PickerKind::Apps),
         args::Commands::Reload => match socket::send_message(AppMessage::AppReload) {
             Err(e) => eprintln!("Failed to send: {e}"),
             _ => (),
