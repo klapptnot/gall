@@ -1,8 +1,10 @@
 pub(crate) mod apps;
 
 use crate::{
-    gtk, Arc, GallApp,
-    config::ConfigLoad
+    config::ConfigLoad,
+    gtk,
+    pickers::apps::AppPicker,
+    Arc, GallApp,
 };
 use gtk::prelude::{BoxExt, WidgetExt};
 
@@ -26,12 +28,10 @@ impl PickerKind {
     }
 
     pub fn from_kind(&self, app: Arc<GallApp>) -> Arc<dyn Picker> {
-        let picker = match self {
-            PickerKind::Apps => apps::AppPicker::new(app),
+        match self {
+            PickerKind::Apps => Arc::new(AppPicker::new(app)),
             PickerKind::None => unreachable!(), // used only in one place
-        };
-
-        Arc::new(picker)
+        }
     }
 }
 
@@ -60,7 +60,7 @@ pub(crate) fn create_picker_components() -> (gtk::Box, gtk::Entry, gtk::Button, 
     let toggle_btn = gtk::Button::builder().name("toggle-button").build();
 
     let scroll_apps = gtk::ScrolledWindow::builder()
-        .name("apps-scroll")
+        .name("picker-scroll")
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .overflow(gtk::Overflow::Hidden)
@@ -72,7 +72,7 @@ pub(crate) fn create_picker_components() -> (gtk::Box, gtk::Entry, gtk::Button, 
     scroll_apps.set_vexpand(true);
 
     let listbox = gtk::ListBox::builder()
-        .name("apps-list")
+        .name("picker-list")
         .selection_mode(gtk::SelectionMode::Single)
         .vexpand_set(true)
         .build();

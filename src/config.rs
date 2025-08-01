@@ -8,9 +8,7 @@ use std::sync::Arc;
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct AppEntry {
     pub name: String,
-    #[serde(rename = "generic")]
-    pub genc: Option<String>,
-    #[serde(rename = "description")]
+    pub gend: Option<String>,
     pub desc: Option<String>,
     pub icon: Option<String>,
     pub exec: String,
@@ -142,7 +140,7 @@ fn parse_desktop_file<P: AsRef<Path>>(filepath: P, term: &Option<String>) -> Opt
 
     Some(AppEntry {
         name: name.to_string(),
-        genc: fields.get("GenericName").map_or(None, |v| Some(v.to_string())),
+        gend: fields.get("GenericName").map_or(None, |v| Some(v.to_string())),
         desc: fields.get("Comment").map_or(None, |v| Some(v.to_string())),
         icon: fields.get("Icon").map_or(None, |v| Some(v.to_string())),
         exec: cleaned_exec.to_string(),
