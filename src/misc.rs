@@ -171,3 +171,15 @@ pub(crate) fn daemonize() {
         }
     }
 }
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub fn unix_sched_yield() {
+  unsafe {
+    std::arch::asm!(
+      "syscall",
+      in("rax") 24,
+      options(nostack, nomem)
+    );
+  }
+}
+

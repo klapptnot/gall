@@ -72,49 +72,43 @@ pub fn start_socket_listener(message_queue: MessageQueue) {
         }
     };
 
-    if let Err(_) = listener.set_nonblocking(true) {
-        if let Ok(mut queue) = message_queue.lock() {
-            queue.push_back(AppMessage::AppClose.into());
-        }
-        return;
-    }
-
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
                 let queue = Arc::clone(&message_queue);
                 thread::spawn(move || handle_client(stream, queue));
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(10));
+            Err(_) => {
+                if let Ok(mut queue) = message_queue.lock() {
+                    queue.push_back(AppMessage::AppClose.into());
+                }
+                break;
             }
-            Err(_) => (),
         }
+        crate::misc::unix_sched_yield();
     }
 }
 
 pub fn handle_client(mut stream: UnixStream, message_queue: MessageQueue) {
     let mut buffer = [0; 1024];
 
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(n) => {
-                if n == std::mem::size_of::<AppMessage>() {
-                    match AppMessage::from(buffer[..n].to_vec()) {
-                        AppMessage::AppPing => {
-                            let response: Vec<u8> = AppMessage::AppPing.into();
-                            let _ = stream.write_all(&response);
-                        }
-                        msg => {
-                            if let Ok(mut queue) = message_queue.lock() {
-                                queue.push_back(msg.into());
-                            }
+    match stream.read(&mut buffer) {
+        Ok(n) => {
+            if n == std::mem::size_of::<AppMessage>() {
+                match AppMessage::from(buffer[..n].to_vec()) {
+                    AppMessage::AppPing => {
+                        let response: Vec<u8> = AppMessage::AppPing.into();
+                        let _ = stream.write_all(&response);
+                    }
+                    msg => {
+                        if let Ok(mut queue) = message_queue.lock() {
+                            queue.push_back(msg.into());
                         }
                     }
                 }
             }
-            Err(_) => break,
         }
+        Err(_) => (),
     }
 }
 

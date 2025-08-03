@@ -97,7 +97,12 @@ impl GallApp {
 
             let write_queue = locked.msg_queue.clone();
             std::thread::spawn(move || socket::start_socket_listener(write_queue));
-            println!("🔌Starting socket listener on {}", socket::get_socket_path().to_str().expect("path to be valid string"));
+            println!(
+                "🔌Starting socket listener on {}",
+                socket::get_socket_path()
+                    .to_str()
+                    .expect("path to be valid string")
+            );
         }
 
         {
@@ -111,7 +116,7 @@ impl GallApp {
             let pickers = self.pickers.clone();
             let gtk_app = self.app.clone();
 
-            glib::idle_add_local(move || {
+            glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
                 let Ok(mut queue) = queue_for_idle.lock() else {
                     return glib::ControlFlow::Continue;
                 };
@@ -149,11 +154,10 @@ impl GallApp {
                         }
                     }
                     AppMessage::AppClose => {
+                        let _ = std::fs::remove_file(socket::get_socket_path());
                         gtk_app.quit();
                     }
-                    AppMessage::AppPing => {
-                        let _ = socket::send_message(AppMessage::AppPing);
-                    }
+                    AppMessage::AppPing => (), // listener handles this
                 }
 
                 glib::ControlFlow::Continue
@@ -201,13 +205,14 @@ fn gtk_main(config: PathBuf, styles: PathBuf, stay_here: bool) -> glib::ExitCode
         glib::ExitCode::SUCCESS
     });
 
+    let message_queue: socket::MessageQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+    let msg_queue_for_sigint = message_queue.clone();
 
     app.connect_activate(move |app| {
-        let message_queue: socket::MessageQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
         let state = Arc::new(Mutex::new(AppState::new(
             config.to_path_buf(),
             styles.to_path_buf(),
-            message_queue,
+            message_queue.clone(),
             config::load_config(&config),
         )));
         let app_win = Arc::new(GallApp::new(app, state));
@@ -219,7 +224,9 @@ fn gtk_main(config: PathBuf, styles: PathBuf, stay_here: bool) -> glib::ExitCode
         app_ref.quit();
     });
 
-    glib::source::unix_signal_add(libc::SIGINT, || {
+    glib::source::unix_signal_add(libc::SIGINT, move || {
+        if let Ok(mut queue) = msg_queue_for_sigint.lock() {
+            queue.push_back(AppMessage::AppClose.into());
         let _ = std::fs::remove_file(socket::get_socket_path());
         glib::ControlFlow::Break
     });
